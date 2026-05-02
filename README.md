@@ -1,9 +1,9 @@
 # PebbleCalc+
-A simple calculator app for the Pebble smartwatch. Enhanced for Pebble Time 2!
+A simple calculator app for the Pebble smartwatch, enhanced for Pebble Time 2.
 
 ## Features
-- Support addition, subtraction, multiplication, division and exponentiation.
-- [New!] Utilized native double operation for flexible precision operation(Up to 6 decimal).
-- [New!] Touch support for Pebble Time 2, including haptic feedback and swipe gesture to delete digits.
+- Supports addition, subtraction, multiplication, division, and exponentiation.
+- [New!] Uses native double and uint64 operations for flexible precision (up to 6 decimals).
+- [New!] Touch support for Pebble Time 2, including haptic feedback and a swipe gesture to delete digits.
 
-Credit to Michael E for the original implementation of this app.
+Credit to Michael E. for the original implementation of this app.
