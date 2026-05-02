@@ -19,8 +19,6 @@
     "sdkVersion": "3",
     "shortName": "Calculator",
     "targetPlatforms": [
-        "aplite",
-        "basalt",
         "emery"
     ],
     "uuid": "6AFEDC8C-2EA4-4AB6-9AD9-01F6FE1655A4",

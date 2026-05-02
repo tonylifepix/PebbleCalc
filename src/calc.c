@@ -1,6 +1,9 @@
 #include <pebble.h>
+#include <ctype.h>
 #include <limits.h>
-#include "fixed.h"
+#include <stdint.h>
+
+#include "utils.h"
 
 #define MAX_LENGTH 14
 
@@ -35,7 +38,7 @@ static Layout s_layout;
 //Button labels
 static char *buttons[] = {
   "+","-","*","/",
-  "0","^","C","CE",
+  "0","^","CE","AC",
   "1","2","3","+-",
   "4","5","6",".",
   "7","8","9","="
@@ -139,6 +142,162 @@ static bool has_decimal_point(const char *num) {
   return strchr(num, '.') != NULL;
 }
 
+static const char* operator_symbol(uint8_t op) {
+  switch (op) {
+    case 0:
+      return "+";
+    case 1:
+      return "-";
+    case 2:
+      return "*";
+    case 3:
+      return "/";
+    case 4:
+      return "^";
+    default:
+      return "?";
+  }
+}
+
+static bool parse_int64_str(const char *str, int64_t *out) {
+  if (!str || !*str || !out) {
+    return false;
+  }
+
+  bool negative = false;
+  if (*str == '-') {
+    negative = true;
+    ++str;
+  } else if (*str == '+') {
+    ++str;
+  }
+
+  if (!*str) {
+    return false;
+  }
+
+  uint64_t value = 0;
+  uint64_t limit = negative ? ((uint64_t)INT64_MAX + 1u) : (uint64_t)INT64_MAX;
+
+  while (*str) {
+    if (!isdigit((unsigned char)*str)) {
+      return false;
+    }
+    uint64_t digit = (uint64_t)(*str - '0');
+    if (value > (limit - digit) / 10u) {
+      return false;
+    }
+    value = (value * 10u) + digit;
+    ++str;
+  }
+
+  if (negative) {
+    if (value == limit) {
+      *out = INT64_MIN;
+    } else {
+      *out = -(int64_t)value;
+    }
+  } else {
+    *out = (int64_t)value;
+  }
+
+  return true;
+}
+
+static bool int64_add_safe(int64_t a, int64_t b, int64_t *out) {
+  if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b)) {
+    return false;
+  }
+  *out = a + b;
+  return true;
+}
+
+static bool int64_sub_safe(int64_t a, int64_t b, int64_t *out) {
+  if ((b > 0 && a < INT64_MIN + b) || (b < 0 && a > INT64_MAX + b)) {
+    return false;
+  }
+  *out = a - b;
+  return true;
+}
+
+static bool int64_mul_safe(int64_t a, int64_t b, int64_t *out) {
+  if (a == 0 || b == 0) {
+    *out = 0;
+    return true;
+  }
+
+  if (a > 0) {
+    if (b > 0) {
+      if (a > INT64_MAX / b) {
+        return false;
+      }
+    } else {
+      if (b < INT64_MIN / a) {
+        return false;
+      }
+    }
+  } else {
+    if (b > 0) {
+      if (a < INT64_MIN / b) {
+        return false;
+      }
+    } else {
+      if (a != 0 && b < INT64_MAX / a) {
+        return false;
+      }
+    }
+  }
+
+  *out = a * b;
+  return true;
+}
+
+static void int64_to_str(int64_t value, char *buffer, size_t size) {
+  if (!buffer || size == 0) {
+    return;
+  }
+
+  if (value == INT64_MIN) {
+    const char *min_text = "-9223372036854775808";
+    size_t i = 0;
+    while (i + 1 < size && min_text[i]) {
+      buffer[i] = min_text[i];
+      ++i;
+    }
+    buffer[i < size ? i : (size - 1)] = '\0';
+    return;
+  }
+
+  bool negative = value < 0;
+  uint64_t abs_value = (uint64_t)(negative ? -value : value);
+  char temp[24];
+  size_t pos = 0;
+
+  if (abs_value == 0) {
+    temp[pos++] = '0';
+  } else {
+    while (abs_value > 0 && pos < sizeof(temp)) {
+      temp[pos++] = (char)('0' + (abs_value % 10));
+      abs_value /= 10;
+    }
+  }
+
+  size_t out_pos = 0;
+  if (negative && out_pos + 1 < size) {
+    buffer[out_pos++] = '-';
+  }
+
+  while (pos > 0 && out_pos + 1 < size) {
+    buffer[out_pos++] = temp[--pos];
+  }
+
+  buffer[out_pos < size ? out_pos : (size - 1)] = '\0';
+}
+
+static bool fits_display(const char *text) {
+  return text && (strlen(text) < MAX_LENGTH);
+}
+
 static void enter(){
   char *num = operator_entered ? num2 : num1; //Create a pointer to the currnetly edited number
   const char *label = buttons[selected_button];
@@ -148,7 +307,7 @@ static void enter(){
     return;
   }
 
-  if (!is_decimal && has_decimal_point(num) && count_fractional_digits(num) >= FIXED_SCALE_DIGITS) {
+  if (!is_decimal && has_decimal_point(num) && count_fractional_digits(num) >= DOUBLE_MAX_FRACTION_DIGITS) {
     return;
   }
 
@@ -175,69 +334,147 @@ static void clear(bool full){
   text_layer_set_text(s_result_text_layer, num);
 }
 
+//All clear. Clears all numbers and operator.
+static void all_clear(){
+  *num1 = 0;
+  *num2 = 0;
+  operator_entered = false;
+  text_layer_set_text(s_result_text_layer, num1);
+}
+
 //Switch the number's sign.
 static void switch_sign(){
-  bool overflow = false; //Overflow flag
   char *str_num = operator_entered ? num2 : num1; //Get pointer to currently edited number string
-  fixed num = str_to_fixed(str_num, &overflow); //Convert to number
-  num = fixed_mult(num, int_to_fixed(-1), &overflow); //Multiply by -1
-  if(!overflow){
-    fixed_repr(num, str_num, MAX_LENGTH); //Convert back to string
-    text_layer_set_text(s_result_text_layer, str_num); //Display number
-  }
+  double num = str_to_double(str_num); //Convert to number
+  num = -num; //Multiply by -1
+  double_to_str(num, str_num, MAX_LENGTH); //Convert back to string
+  text_layer_set_text(s_result_text_layer, str_num); //Display number
 }
 
 //Calculate result, display it and reset
 static void calculate(){
-  bool overflow = false; //Overflow flag
   //Convert operands to numbers
-  fixed lhs = str_to_fixed(num1, &overflow);
-  fixed rhs = str_to_fixed(num2, &overflow);
-  fixed result = 0;
+  double lhs = str_to_double(num1);
+  double rhs = str_to_double(num2);
+  double result = 0.0;
+  int exponent = 0;
+  int64_t lhs_int = 0;
+  int64_t rhs_int = 0;
+  int64_t int_result = 0;
+  bool lhs_is_int = parse_int64_str(num1, &lhs_int);
+  bool rhs_is_int = parse_int64_str(num2, &rhs_int);
+  bool used_int = false;
+  bool overflow = false;
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "calc: %s %s %s", num1, operator_symbol(operator), num2);
   //Calculate the result
   switch(operator){
+    // Addition
     case 0:
-      result = fixed_add(lhs, rhs, &overflow);
+      if (lhs_is_int && rhs_is_int && int64_add_safe(lhs_int, rhs_int, &int_result)) {
+        result = (double)int_result;
+        used_int = true;
+      } else if (lhs_is_int && rhs_is_int) {
+        overflow = true;
+      } else {
+        result = lhs + rhs;
+      }
       break;
+    // Subtraction
     case 1:
-      result = fixed_subt(lhs, rhs, &overflow);
+      if (lhs_is_int && rhs_is_int && int64_sub_safe(lhs_int, rhs_int, &int_result)) {
+        result = (double)int_result;
+        used_int = true;
+      } else if (lhs_is_int && rhs_is_int) {
+        overflow = true;
+      } else {
+        result = lhs - rhs;
+      }
       break;
+    // Multiplication
     case 2:
-      result = fixed_mult(lhs, rhs, &overflow);
+      if (lhs_is_int && rhs_is_int && int64_mul_safe(lhs_int, rhs_int, &int_result)) {
+        result = (double)int_result;
+        used_int = true;
+      } else if (lhs_is_int && rhs_is_int) {
+        overflow = true;
+      } else {
+        result = lhs * rhs;
+      }
       break;
+    // Division
     case 3:
-      if (rhs == 0) {
+      if ((rhs_is_int && rhs_int == 0) || (!rhs_is_int && rhs == 0.0)) {
+        APP_LOG(APP_LOG_LEVEL_DEBUG, "calc result: divide by 0");
         text_layer_set_text(s_result_text_layer, "Divide by 0");
         *num1 = 0;
         *num2 = 0;
         operator_entered = false;
         return;
       }
-      result = fixed_div(lhs, rhs);
+      if (lhs_is_int && rhs_is_int && (lhs_int % rhs_int) == 0) {
+        result = (double)(lhs_int / rhs_int);
+        int_result = lhs_int / rhs_int;
+        used_int = true;
+      } else {
+        result = lhs / rhs;
+      }
       break;
+    // Exponentiation
     case 4:
-      result = fixed_pow(lhs, fixed_to_int(rhs), &overflow); //Exponent must be an int
+      exponent = (int)rhs; //Exponent must be an int
+      result = pow_int(lhs, exponent);
       break;
     default:
-      result = 0;
+      result = 0.0;
   }
 
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "num1: %d num2: %d result: %d", lhs, rhs, result);
+  char lhs_text[32];
+  char rhs_text[32];
+  char result_value_text[32];
+  if (lhs_is_int) {
+    int64_to_str(lhs_int, lhs_text, sizeof(lhs_text));
+  } else {
+    double_to_str(lhs, lhs_text, sizeof(lhs_text));
+  }
+  if (rhs_is_int) {
+    int64_to_str(rhs_int, rhs_text, sizeof(rhs_text));
+  } else {
+    double_to_str(rhs, rhs_text, sizeof(rhs_text));
+  }
+  if (overflow) {
+    strncpy(result_value_text, "Overflow", sizeof(result_value_text));
+    result_value_text[sizeof(result_value_text) - 1] = '\0';
+  } else if (used_int) {
+    int64_to_str(int_result, result_value_text, sizeof(result_value_text));
+  } else {
+    double_to_str(result, result_value_text, sizeof(result_value_text));
+  }
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "values: %s %s %s", lhs_text, operator_symbol(operator), rhs_text);
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "result value: %s", result_value_text);
 
   //Reset operands, operator_entered and entering_decimal
   *num1 = 0;
   *num2 = 0;
   operator_entered = false;
   
-  if(overflow){
-    text_layer_set_text(s_result_text_layer, "Overflow Error"); //Display message on overflow
+  if (overflow) {
+    strncpy(result_text, "Overflow", MAX_LENGTH);
+    result_text[MAX_LENGTH - 1] = '\0';
+  } else if (used_int) {
+    int64_to_str(int_result, result_text, MAX_LENGTH);
+  } else {
+    double_to_str(result, result_text, MAX_LENGTH); //Convert result to string
   }
-  else{
-    fixed_repr(result, result_text, MAX_LENGTH); //Convert result to string
-    text_layer_set_text(s_result_text_layer, result_text); //Display result
-    strcpy(num1, result_text); //Copy result into num1
-    num1_is_ans = true;
+
+  if (!overflow && !fits_display(result_text)) {
+    strncpy(result_text, "Overflow", MAX_LENGTH);
+    result_text[MAX_LENGTH - 1] = '\0';
+    overflow = true;
   }
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "calc result text: %s", result_text);
+  text_layer_set_text(s_result_text_layer, result_text); //Display result
+  strcpy(num1, result_text); //Copy result into num1
+  num1_is_ans = true;
 }
 
 //Button press handler
@@ -258,11 +495,11 @@ static void press_selected_button(void){
     case 5:// ^
       enter_operator(4);
       break;
-    case 6:// C
-      clear(false);
-      break;
-    case 7:// CE
+    case 6:// CE
       clear(true);
+      break;
+    case 7:// AC
+      all_clear();
       break;
     case 11:// +-
       switch_sign();
