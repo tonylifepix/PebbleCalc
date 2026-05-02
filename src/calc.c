@@ -10,6 +10,8 @@ static TextLayer *s_result_text_layer;
 static Layer *s_buttons_layer;
 static int8_t s_touch_down_button = -1;
 static bool s_touch_subscribed = false;
+static GPoint s_swipe_start_point;
+static bool s_swipe_start_in_text = false;
 
 // Ultra short vibration pattern for button presses
 static const uint32_t segments[] = { 50 };
@@ -278,6 +280,13 @@ static void select_handler(ClickRecognizerRef recognizer, void *context){
   press_selected_button();
 }
 
+static bool point_in_rect(GPoint point, GRect rect) {
+  return point.x >= rect.origin.x
+    && point.y >= rect.origin.y
+    && point.x < rect.origin.x + rect.size.w
+    && point.y < rect.origin.y + rect.size.h;
+}
+
 static int8_t button_hit_test(GPoint point) {
   if (point.x < s_layout.grid_origin.x || point.y < s_layout.grid_origin.y) {
     return -1;
@@ -302,10 +311,13 @@ static int8_t button_hit_test(GPoint point) {
 
 static void touch_handler(const TouchEvent *event, void *context) {
   int8_t hit = button_hit_test(GPoint(event->x, event->y));
+  GPoint point = GPoint(event->x, event->y);
 
   switch (event->type) {
     case TouchEvent_Touchdown:
       s_touch_down_button = hit;
+      s_swipe_start_point = point;
+      s_swipe_start_in_text = point_in_rect(point, s_layout.text_bounds);
       if (hit >= 0 && hit != selected_button) {
         selected_button = hit;
         layer_mark_dirty(s_buttons_layer);
@@ -318,12 +330,24 @@ static void touch_handler(const TouchEvent *event, void *context) {
       }
       break;
     case TouchEvent_Liftoff:
+      if (s_swipe_start_in_text) {
+        int16_t dx = point.x - s_swipe_start_point.x;
+        int16_t dy = point.y - s_swipe_start_point.y;
+        if (abs(dx) >= 30 && abs(dy) <= 20) {
+          clear(false);
+          vibes_enqueue_custom_pattern(pat);
+          s_touch_down_button = -1;
+          s_swipe_start_in_text = false;
+          break;
+        }
+      }
       if (hit >= 0 && hit == s_touch_down_button) {
         //vibes_short_pulse();
         vibes_enqueue_custom_pattern(pat);
         press_selected_button();
       }
       s_touch_down_button = -1;
+      s_swipe_start_in_text = false;
       break;
   }
 }
