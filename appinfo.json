@@ -1,9 +1,7 @@
 {
     "appKeys": {},
-    "capabilities": [
-        ""
-    ],
-    "companyName": "Michael E.",
+    "capabilities": [],
+    "companyName": "T16U",
     "enableMultiJS": true,
     "longName": "Calculator",
     "projectType": "native",
@@ -22,10 +20,11 @@
     "shortName": "Calculator",
     "targetPlatforms": [
         "aplite",
-        "basalt"
+        "basalt",
+        "emery"
     ],
     "uuid": "3a239ae0-adc5-4d40-b871-6fbcd8c37e7c",
-    "versionLabel": "1.1",
+    "versionLabel": "1.2",
     "watchapp": {
         "watchface": false
     }

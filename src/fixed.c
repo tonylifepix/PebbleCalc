@@ -137,15 +137,17 @@ char* fixed_repr(fixed fixed, char* buffer, size_t size)
     int fractional_part = abs(fixed) % FIXED_SCALE;
 
     if (fractional_part != 0) {
-        int n = snprintf(buffer, size,
-                         "%s%d.%02u",
-                         sign, integal_part, fractional_part);
+        snprintf(buffer, size,
+                 "%s%d.%0*u",
+                 sign, integal_part, FIXED_SCALE_DIGITS, fractional_part);
 
-        /* Remove the trailing zeros. */
-        if (fractional_part >= 10 &&
-            fractional_part % 10 == 0) {
-
-            buffer[n-1] = '\0';
+        /* Remove trailing zeros from the fractional part. */
+        size_t n = strlen(buffer);
+        while (n > 0 && buffer[n - 1] == '0') {
+            buffer[--n] = '\0';
+        }
+        if (n > 0 && buffer[n - 1] == '.') {
+            buffer[--n] = '\0';
         }
     } else {
         snprintf(buffer, size,
@@ -208,22 +210,24 @@ fixed str_to_fixed(const char* str, bool* overflow)
     }
 
     // Detect a potential overflow.
-    static const int FIXED_MAX_digits = 8;
-    static const char* FIXED_MAX_char = "21474836"; /* FIXED_MAX/FIXED_SCALE */
+    int max_integral = FIXED_MAX / FIXED_SCALE;
+    char max_integral_str[16];
+    snprintf(max_integral_str, sizeof(max_integral_str), "%d", max_integral);
+    int max_integral_digits = (int)strlen(max_integral_str);
     const char* integral_end = strchr(str, '.');
     if (integral_end == NULL) {
         integral_end = str + strlen(str);
     }
 
-    if (integral_end - str > FIXED_MAX_digits) {
+    if (integral_end - str > max_integral_digits) {
         *overflow = true;
         return 0;
-    } else if (integral_end - str == FIXED_MAX_digits) {
+    } else if (integral_end - str == max_integral_digits) {
         /* strcmp will return a positive number for string
-         * lexicographically greater than FIXED_MAX_digits. For
+         * lexicographically greater than max_integral_digits. For
          * strings of the same length (which is the case in this if
          * branch) it is the same as being numerically greater. */
-        if (strncmp(str, FIXED_MAX_char, FIXED_MAX_digits) > 0) {
+        if (strncmp(str, max_integral_str, max_integral_digits) > 0) {
             *overflow = true;
             return 0;
         }
@@ -234,11 +238,12 @@ fixed str_to_fixed(const char* str, bool* overflow)
     if (*fractional_start != '\0') {
         ++fractional_start;
     }
-    int fractional_part = str_to_int(fractional_start, &endptr, 2);
-
-    if (endptr - fractional_start == 1) {
-        /* There was only one digit -- higher order of magnitude. */
+    int fractional_part = str_to_int(fractional_start, &endptr, FIXED_SCALE_DIGITS);
+    int fractional_digits = (int)(endptr - fractional_start);
+    while (fractional_digits < FIXED_SCALE_DIGITS) {
+        /* Scale up when fewer fractional digits were provided. */
         fractional_part *= 10;
+        ++fractional_digits;
     }
 
     return sign * (integral_part + fractional_part);
