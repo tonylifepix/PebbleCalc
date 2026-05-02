@@ -37,10 +37,10 @@
 typedef int fixed;
 
 /** The scaling factor of the fixed point numbers. */
-#define FIXED_SCALE 10000
+#define FIXED_SCALE 1000
 
 /** Decimal digits of precision implied by FIXED_SCALE. */
-#define FIXED_SCALE_DIGITS 4
+#define FIXED_SCALE_DIGITS 3
 
 /** Maximum representable value. */
 static const fixed FIXED_MAX = INT_MAX;
