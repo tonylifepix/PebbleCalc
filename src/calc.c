@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "utils.h"
+#include "tips.h"
 
 #define MAX_LENGTH 14
 
@@ -38,7 +39,7 @@ static Layout s_layout;
 //Button labels
 static char *buttons[] = {
   "+","-","*","/",
-  "0","^","CE","AC",
+  "0","^","CE","TIPS",
   "1","2","3","+-",
   "4","5","6",".",
   "7","8","9","="
@@ -52,6 +53,30 @@ static char num1[MAX_LENGTH] = ""; //First operand
 static char num2[MAX_LENGTH] = ""; //Second operand
 static char result_text[MAX_LENGTH] = ""; //Results text layer buffer string
 static uint8_t operator = 0; //Operator, where 0 is +, 1 is -, 2 is *, 3 is /, 4 is ^
+static bool s_num2_cleared_once = false; //Track CE on second operand to toggle AC
+static void touch_handler(const TouchEvent *event, void *context);
+static void tips_disable_touch(void);
+static void tips_enable_touch(void);
+
+enum {
+  CLEAR_BUTTON_INDEX = 6,
+  DISABLED_CLEAR_BUTTON_INDEX = 7
+};
+
+static bool button_is_enabled(int8_t index) {
+  return index >= 0 && index < 20 && buttons[index][0] != '\0';
+}
+
+static bool clear_button_is_ac(void) {
+  return operator_entered && s_num2_cleared_once;
+}
+
+static void update_clear_label(void) {
+  buttons[CLEAR_BUTTON_INDEX] = clear_button_is_ac() ? "AC" : "CE";
+  if (s_buttons_layer) {
+    layer_mark_dirty(s_buttons_layer);
+  }
+}
 
 static void layout_update(GRect bounds) {
 #if defined(PBL_PLATFORM_EMERY)
@@ -125,9 +150,12 @@ static void button_layer_update(Layer *layer, GContext *ctx) {
 //Up or Down button handler
 static void up_down_handler(ClickRecognizerRef recognizer, void *context){
   //Move selected button down if down is pressed, and up if up is pressed
-  selected_button += (click_recognizer_get_button_id(recognizer) == BUTTON_ID_DOWN) ? 1 : -1;
-  //If selected button is outside button range, wrap around
-  selected_button = selected_button < 0 ? 19 : selected_button > 19 ? 0 : selected_button;
+  int step = (click_recognizer_get_button_id(recognizer) == BUTTON_ID_DOWN) ? 1 : -1;
+  do {
+    selected_button += step;
+    //If selected button is outside button range, wrap around
+    selected_button = selected_button < 0 ? 19 : selected_button > 19 ? 0 : selected_button;
+  } while (!button_is_enabled(selected_button));
   //Mark button layer dirty for redraw
   layer_mark_dirty(s_buttons_layer);
 }
@@ -298,6 +326,30 @@ static bool fits_display(const char *text) {
   return text && (strlen(text) < MAX_LENGTH);
 }
 
+static const char *current_number_text(void) {
+  if (operator_entered && num2[0] != '\0') {
+    return num2;
+  }
+  if (num1[0] != '\0') {
+    return num1;
+  }
+  return "0";
+}
+
+static void tips_disable_touch(void) {
+  if (s_touch_subscribed) {
+    touch_service_unsubscribe();
+    s_touch_subscribed = false;
+  }
+}
+
+static void tips_enable_touch(void) {
+  if (!s_touch_subscribed && touch_service_is_enabled()) {
+    touch_service_subscribe(touch_handler, NULL);
+    s_touch_subscribed = true;
+  }
+}
+
 static void enter(){
   char *num = operator_entered ? num2 : num1; //Create a pointer to the currnetly edited number
   const char *label = buttons[selected_button];
@@ -314,6 +366,10 @@ static void enter(){
   if(strlen(num) < MAX_LENGTH-1){ //Make sure string is smaller than the max length (-1 to exclude null character)
     strcat(num, label); //Add needed character to the end of the string
     text_layer_set_text(s_result_text_layer, num); //Display num
+    if (operator_entered) {
+      s_num2_cleared_once = false;
+      update_clear_label();
+    }
   }
 }
 
@@ -321,17 +377,28 @@ static void enter(){
 static void enter_operator(uint8_t id){
   operator = id; //Set operator to operator id
   operator_entered = true;
+  s_num2_cleared_once = false;
   text_layer_set_text(s_result_text_layer, buttons[selected_button]); //Display operator
+  update_clear_label();
 }
 
 //Backspace. Clears whole number if full is true
 static void clear(bool full){
   char *num = operator_entered ? num2 : num1; //Create a pointer to the currnetly edited number
+  bool had_num2 = operator_entered && (num2[0] != '\0');
   if(full)
     *num = 0;
   else if (strlen(num) > 0)
     num[strlen(num)-1] = 0;
   text_layer_set_text(s_result_text_layer, num);
+  if (operator_entered) {
+    if (full && had_num2 && num2[0] == '\0') {
+      s_num2_cleared_once = true;
+    }
+  } else {
+    s_num2_cleared_once = false;
+  }
+  update_clear_label();
 }
 
 //All clear. Clears all numbers and operator.
@@ -339,7 +406,9 @@ static void all_clear(){
   *num1 = 0;
   *num2 = 0;
   operator_entered = false;
+  s_num2_cleared_once = false;
   text_layer_set_text(s_result_text_layer, num1);
+  update_clear_label();
 }
 
 //Switch the number's sign.
@@ -456,6 +525,7 @@ static void calculate(){
   *num1 = 0;
   *num2 = 0;
   operator_entered = false;
+  s_num2_cleared_once = false;
   
   if (overflow) {
     strncpy(result_text, "Overflow", MAX_LENGTH);
@@ -475,10 +545,14 @@ static void calculate(){
   text_layer_set_text(s_result_text_layer, result_text); //Display result
   strcpy(num1, result_text); //Copy result into num1
   num1_is_ans = true;
+  update_clear_label();
 }
 
 //Button press handler
 static void press_selected_button(void){
+  if (!button_is_enabled(selected_button)) {
+    return;
+  }
   switch(selected_button){
     case 0: // +
       enter_operator(0);
@@ -495,11 +569,15 @@ static void press_selected_button(void){
     case 5:// ^
       enter_operator(4);
       break;
-    case 6:// CE
-      clear(true);
+    case 6:// CE/AC
+      if (clear_button_is_ac()) {
+        all_clear();
+      } else {
+        clear(true);
+      }
       break;
-    case 7:// AC
-      all_clear();
+    case 7:// TIPS
+      tips_show(str_to_double(current_number_text()), tips_disable_touch, tips_enable_touch);
       break;
     case 11:// +-
       switch_sign();
@@ -548,6 +626,9 @@ static int8_t button_hit_test(GPoint point) {
 
 static void touch_handler(const TouchEvent *event, void *context) {
   int8_t hit = button_hit_test(GPoint(event->x, event->y));
+  if (hit >= 0 && !button_is_enabled(hit)) {
+    hit = -1;
+  }
   GPoint point = GPoint(event->x, event->y);
 
   switch (event->type) {
@@ -617,6 +698,8 @@ static void init(void) {
   layer_set_update_proc(s_buttons_layer, button_layer_update);
   layer_add_child(window_get_root_layer(s_window), s_buttons_layer);
 
+  update_clear_label();
+
   if (touch_service_is_enabled()) {
     touch_service_subscribe(touch_handler, NULL);
     s_touch_subscribed = true;
@@ -631,6 +714,8 @@ static void deinit(void) {
     touch_service_unsubscribe();
     s_touch_subscribed = false;
   }
+
+  tips_deinit();
 	// Destroy the text layer
 	text_layer_destroy(s_result_text_layer);
   layer_destroy(s_buttons_layer);
